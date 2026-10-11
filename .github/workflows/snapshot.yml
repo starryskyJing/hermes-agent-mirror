@@ -1,0 +1,45 @@
+name: sync-snapshot
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 21 * * *'
+permissions:
+  contents: write
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 选上游最新版本 tag
+        id: up
+        run: |
+          set -e
+          TAG=$(git ls-remote --tags --refs https://github.com/NousResearch/hermes-agent.git \
+                | awk -F'refs/tags/' '{print $2}' | grep -E '^v[0-9]' | sort -V | tail -1)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "上游最新 tag = $TAG"
+      - name: 拉上游该版本的代码（浅拉，不带历史）
+        run: |
+          set -e
+          git clone --depth 1 --branch "${{ steps.up.outputs.tag }}" https://github.com/NousResearch/hermes-agent.git /tmp/up
+          du -sh /tmp/up
+      - name: 覆盖到本仓库（保留 .github 工作流自身）
+        run: rsync -a --delete --exclude '.git' --exclude '.github' /tmp/up/ ./
+      - name: 提交并推送
+        run: |
+          set -e
+          git config user.name  "mirror-bot"
+          git config user.email "mirror-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "snapshot ${{ steps.up.outputs.tag }} ($(date -u +%F))"
+          else
+            echo "内容无变化"
+          fi
+          git tag -f "${{ steps.up.outputs.tag }}"
+          git push origin HEAD:main
+          git push origin -f "refs/tags/${{ steps.up.outputs.tag }}"
+          echo "完成 → ${{ steps.up.outputs.tag }}"
